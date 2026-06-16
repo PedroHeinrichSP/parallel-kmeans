@@ -16,24 +16,25 @@ int main(int argc, char* argv[]) {
 
     if (argc > 1) {
         size = (size_t)atoi(argv[1]);
-        if (argc > 2) {
-            k = atoi(argv[2]);
-            if (argc > 3) {
-                switch (atoi(argv[3])){
-                case 'o':
-                    algorithm = kMeansOpenMP;
-                    break;
-                case 'g':
-                    algorithm = kMeansOpenMP_GPU;
-                    break;    
-                case 'c':
-                    algorithm = kMeansCUDA;
-                    break;
-                default:
-                    algorithm = kMeans;
-                    break;
-                }
-            }
+    }
+    if (argc > 2) {
+        k = atoi(argv[2]);
+    }
+    if (argc > 3) {
+        switch (argv[3][0]) {
+        case 'o':
+            algorithm = kMeansOpenMP;
+            break;
+        case 'g':
+            algorithm = kMeansOpenMP_GPU;
+            break;
+        case 'c':
+            algorithm = kMeansCUDA;
+            break;
+        case 's':
+        default:
+            algorithm = kMeans;
+            break;
         }
     }
 
