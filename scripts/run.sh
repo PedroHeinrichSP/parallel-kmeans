@@ -8,4 +8,4 @@ CLUSTERS="${2:-5}"
 ALGORITHM="${3:-s}"
 
 time ./artifacts/executables/kmeans_seq "$OBSERVATIONS" "$CLUSTERS" "$ALGORITHM"
-convert artifacts/images/eps/image.eps artifacts/images/png/image.png
+# convert artifacts/images/eps/image.eps artifacts/images/png/image.png

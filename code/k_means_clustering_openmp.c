@@ -3,14 +3,14 @@
  * @brief Versao paralela em CPU do algoritmo K-Means usando OpenMP.
  *
  * Mudancas realizadas para a paralelizacao:
- * - A atribuicao inicial dos grupos permanece sequencial porque usa rand(), que
- *   possui estado global e nao e thread-safe.
- * - O calculo dos centroides foi paralelizado com acumuladores privados por
- *   thread; ao final de cada iteracao, os acumuladores sao reduzidos para o
- *   vetor compartilhado de clusters.
- * - A reatribuicao das observacoes aos centroides foi paralelizada com
- *   reduction(+:changed), pois cada thread atualiza apenas a observacao do seu
- *   proprio indice e soma localmente a quantidade de mudancas.
+ * - A atribuicao inicial dos grupos usa um mapeamento deterministico por
+ *   indice, eliminando a dependencia de rand() e permitindo bootstrap paralelo.
+ * - O loop principal do K-Means roda dentro de uma regiao paralela persistente,
+ *   reduzindo o overhead de abrir multiplas regioes a cada iteracao.
+ * - O calculo dos centroides usa acumuladores privados por thread e merge
+ *   paralelo por cluster, mantendo o laco quente livre de atomics.
+ * - A reatribuicao das observacoes aos centroides acumula mudancas por thread,
+ *   consolidadas ao fim de cada iteracao para decidir a parada.
  * - O calculo do centroide unico (k <= 1) tambem usa reduction para somar x/y.
  *
  * Tempos de execucao medidos no servidor de teste (preencher apos benchmark):
@@ -28,9 +28,20 @@
 #include "headers/k_means_clustering_openmp.h"
 
 #include <float.h>
+#include <stdint.h>
 #include <omp.h>
 #include <stdlib.h>
 #include <string.h>
+
+static unsigned int mixIndexToGroupSeed(size_t index, int k)
+{
+    uint64_t value = (uint64_t)index + 0x9E3779B97F4A7C15ULL;
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
+    value ^= value >> 31;
+
+    return (unsigned int)(value % (uint64_t)k);
+}
 
 int calculateNearstOpenMP(observation *o, cluster clusters[], int k)
 {
@@ -100,8 +111,10 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
         double *localX = NULL;
         double *localY = NULL;
         size_t *localCount = NULL;
+        size_t *changedPerThread = NULL;
         size_t changed = 0;
         size_t minAcceptedError = size / 10000;
+        int keepRunning = 1;
 
         clusters = (cluster *)malloc(sizeof(cluster) * k);
         if (clusters == NULL)
@@ -113,37 +126,54 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
         localX = (double *)calloc((size_t)maxThreads * k, sizeof(double));
         localY = (double *)calloc((size_t)maxThreads * k, sizeof(double));
         localCount = (size_t *)calloc((size_t)maxThreads * k, sizeof(size_t));
-        if (localX == NULL || localY == NULL || localCount == NULL)
+        changedPerThread = (size_t *)calloc((size_t)maxThreads, sizeof(size_t));
+        if (localX == NULL || localY == NULL || localCount == NULL ||
+            changedPerThread == NULL)
         {
             free(localX);
             free(localY);
             free(localCount);
+            free(changedPerThread);
             free(clusters);
             return NULL;
         }
 
-        /* Igual a versao sequencial: rand() fica fora da regiao paralela para
-           evitar uso concorrente do gerador pseudoaleatorio global. */
+        /* Bootstrap deterministico e paralelizavel: remove dependencia do
+           estado global de rand() e mantem a distribuicao inicial por indice. */
+        #pragma omp parallel for schedule(static)
         for (size_t j = 0; j < size; j++)
         {
-            observations[j].group = rand() % k;
+            observations[j].group = (int)mixIndexToGroupSeed(j, k);
         }
 
-        do
+        #pragma omp parallel shared(changed, keepRunning, clusters, localX, localY, localCount, changedPerThread)
         {
-            memset(localX, 0, (size_t)maxThreads * k * sizeof(double));
-            memset(localY, 0, (size_t)maxThreads * k * sizeof(double));
-            memset(localCount, 0, (size_t)maxThreads * k * sizeof(size_t));
+            int tid = omp_get_thread_num();
+            double *threadX = localX + ((size_t)tid * k);
+            double *threadY = localY + ((size_t)tid * k);
+            size_t *threadCount = localCount + ((size_t)tid * k);
 
-            /* Paralelizacao do STEP 2: cada thread acumula x, y e count em uma
-               area privada indexada por tid, removendo atomics no laco grande. */
-            #pragma omp parallel
+            while (keepRunning)
             {
-                int tid = omp_get_thread_num();
-                double *threadX = localX + ((size_t)tid * k);
-                double *threadY = localY + ((size_t)tid * k);
-                size_t *threadCount = localCount + ((size_t)tid * k);
+                #pragma omp for schedule(static)
+                for (int i = 0; i < k; i++)
+                {
+                    clusters[i].x = 0;
+                    clusters[i].y = 0;
+                    clusters[i].count = 0;
+                }
 
+                #pragma omp for schedule(static)
+                for (int i = 0; i < k; i++)
+                {
+                    threadX[i] = 0;
+                    threadY[i] = 0;
+                    threadCount[i] = 0;
+                }
+
+                changedPerThread[tid] = 0;
+
+                /* Cada thread acumula apenas em seu bloco local por cluster. */
                 #pragma omp for schedule(static)
                 for (size_t j = 0; j < size; j++)
                 {
@@ -152,56 +182,61 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                     threadY[group] += observations[j].y;
                     threadCount[group]++;
                 }
-            }
 
-            for (int i = 0; i < k; i++)
-            {
-                clusters[i].x = 0;
-                clusters[i].y = 0;
-                clusters[i].count = 0;
-            }
-
-            /* Reducao manual dos acumuladores privados para os centroides
-               compartilhados. Este trecho e pequeno: maxThreads * k. */
-            for (int tid = 0; tid < maxThreads; tid++)
-            {
+                /* Merge paralelo por cluster: cada centroide agrega todas as
+                   contribuicoes thread-local antes da normalizacao. */
+                #pragma omp for schedule(static)
                 for (int i = 0; i < k; i++)
                 {
-                    size_t index = (size_t)tid * k + i;
-                    clusters[i].x += localX[index];
-                    clusters[i].y += localY[index];
-                    clusters[i].count += localCount[index];
-                }
-            }
+                    double sumX = 0;
+                    double sumY = 0;
+                    size_t count = 0;
 
-            for (int i = 0; i < k; i++)
-            {
-                if (clusters[i].count > 0)
+                    for (int owner = 0; owner < maxThreads; owner++)
+                    {
+                        size_t index = (size_t)owner * k + i;
+                        sumX += localX[index];
+                        sumY += localY[index];
+                        count += localCount[index];
+                    }
+
+                    clusters[i].count = count;
+                    if (count > 0)
+                    {
+                        clusters[i].x = sumX / count;
+                        clusters[i].y = sumY / count;
+                    }
+                }
+
+                /* Reclassificacao paralela; cada thread soma suas mudancas
+                   localmente para evitar atomics no caminho quente. */
+                #pragma omp for schedule(static)
+                for (size_t j = 0; j < size; j++)
                 {
-                    clusters[i].x /= clusters[i].count;
-                    clusters[i].y /= clusters[i].count;
+                    int nearest = calculateNearstOpenMP(observations + j, clusters, k);
+                    if (nearest != observations[j].group)
+                    {
+                        changedPerThread[tid]++;
+                        observations[j].group = nearest;
+                    }
                 }
-            }
 
-            changed = 0;
-
-            /* Paralelizacao dos STEPs 3 e 4: cada observacao e independente na
-               busca pelo centroide mais proximo; reduction soma as mudancas. */
-            #pragma omp parallel for reduction(+ : changed) schedule(static)
-            for (size_t j = 0; j < size; j++)
-            {
-                int nearest = calculateNearstOpenMP(observations + j, clusters, k);
-                if (nearest != observations[j].group)
+                #pragma omp single
                 {
-                    changed++;
-                    observations[j].group = nearest;
+                    changed = 0;
+                    for (int owner = 0; owner < maxThreads; owner++)
+                    {
+                        changed += changedPerThread[owner];
+                    }
+                    keepRunning = changed > minAcceptedError;
                 }
             }
-        } while (changed > minAcceptedError);
+        }
 
         free(localX);
         free(localY);
         free(localCount);
+        free(changedPerThread);
     }
     else
     {
