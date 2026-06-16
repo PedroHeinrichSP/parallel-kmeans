@@ -10,5 +10,6 @@ gcc code/runner.c \
     code/k_means_clustering_openmp_gpu.c \
     code/k_means_clustering_cuda.c \
     -Icode/headers \
+    -fopenmp \
     -o artifacts/executables/kmeans_seq \
     -lm
