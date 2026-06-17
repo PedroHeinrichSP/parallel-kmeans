@@ -58,7 +58,8 @@ measure_case() {
     for run_index in $(seq 1 "$RUNS"); do
         KMEANS_SKIP_EPS=1 \
         OMP_DYNAMIC=FALSE \
-        OMP_PROC_BIND=TRUE \
+        OMP_PLACES=cores \
+        OMP_PROC_BIND=spread \
         OMP_WAIT_POLICY="$wait_policy" \
         OMP_NUM_THREADS="$threads" \
         /usr/bin/time -f "%e" -o "$time_file" \

@@ -3,7 +3,7 @@ set -e
 
 mkdir -p artifacts/executables
 
-CFLAGS="${CFLAGS:--O3 -mtune=native -fno-math-errno}"
+CFLAGS="${CFLAGS:--O3 -march=native -fno-math-errno}"
 
 gcc $CFLAGS code/runner.c \
     code/k_means_clustering_utils.c \
