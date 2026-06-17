@@ -71,7 +71,6 @@ measure_case() {
         elapsed="$(tr -d "[:space:]" < "$time_file")"
 
         printf "%s\t%s\t%s\t%s\n" "$label" "$display_threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
-        printf "%s\t%s\t%s\t%s\n" "$label" "$threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
         printf "  run %d/%d: %ss\n" "$run_index" "$RUNS" "$elapsed"
     done
 
@@ -84,7 +83,12 @@ for thread_count in "${THREADS[@]}"; do
     measure_case "omp-${thread_count}t" "o" "$thread_count"
 done
 
-measure_case "cuda" "c" "1" "gpu"
+if command -v "${NVCC:-nvcc}" >/dev/null 2>&1; then
+    measure_case "cuda" "c" "1" "gpu"
+else
+    echo
+    echo "Pulando cuda: nvcc nao esta disponivel; o build usou o placeholder."
+fi
 
 echo
 echo "Resumo"
