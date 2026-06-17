@@ -43,6 +43,7 @@ measure_case() {
     local label="$1"
     local algorithm="$2"
     local threads="$3"
+    local display_threads="${4:-$threads}"
     local run_index elapsed time_file wait_policy
 
     wait_policy="ACTIVE"
@@ -58,6 +59,7 @@ measure_case() {
     for run_index in $(seq 1 "$RUNS"); do
         KMEANS_SKIP_EPS=1 \
         OMP_DYNAMIC=FALSE \
+        OMP_PROC_BIND=TRUE \
         OMP_PLACES=cores \
         OMP_PROC_BIND=spread \
         OMP_WAIT_POLICY="$wait_policy" \
@@ -68,6 +70,7 @@ measure_case() {
 
         elapsed="$(tr -d "[:space:]" < "$time_file")"
 
+        printf "%s\t%s\t%s\t%s\n" "$label" "$display_threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
         printf "%s\t%s\t%s\t%s\n" "$label" "$threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
         printf "  run %d/%d: %ss\n" "$run_index" "$RUNS" "$elapsed"
     done
@@ -80,6 +83,8 @@ measure_case "seq" "s" "1"
 for thread_count in "${THREADS[@]}"; do
     measure_case "omp-${thread_count}t" "o" "$thread_count"
 done
+
+measure_case "cuda" "c" "1" "gpu"
 
 echo
 echo "Resumo"

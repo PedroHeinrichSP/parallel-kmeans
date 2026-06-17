@@ -7,6 +7,7 @@ Baseado na implementação de [Lakhan Nad](https://github.com/TheAlgorithms/C/bl
 
 - `gcc`
 - `bash`
+- `nvcc`, para compilar a implementação CUDA
 - ImageMagick, para gerar a imagem PNG a partir do EPS (`convert`)
 
 ## Compilação
@@ -39,10 +40,24 @@ Também é possível informar esses valores:
 ./scripts/run.sh <quantidade_de_observacoes> <quantidade_de_clusters> <algoritmo_usado>
 ```
 
+O terceiro argumento seleciona a implementação:
+
+```txt
+c  CUDA
+o  OpenMP
+g  OpenMP GPU
+```
+
 Exemplo:
 
 ```sh
 ./scripts/run.sh 10000 4
+```
+
+Para executar a versão CUDA:
+
+```sh
+./scripts/run.sh 10000 4 c
 ```
 
 ## Saídas

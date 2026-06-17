@@ -90,7 +90,8 @@ function Invoke-MeasureCase {
     param(
         [string]$Label,
         [string]$Algorithm,
-        [int]$ThreadCount
+        [int]$ThreadCount,
+        [string]$DisplayThreads = [string]$ThreadCount
     )
 
     $WaitPolicy = "ACTIVE"
@@ -127,6 +128,7 @@ function Invoke-MeasureCase {
             $Elapsed = $Stopwatch.Elapsed.TotalSeconds
             $Results.Add([pscustomobject]@{
                 Label = $Label
+                Threads = $DisplayThreads
                 Threads = $ThreadCount
                 Run = $RunIndex
                 Elapsed = $Elapsed
@@ -149,6 +151,8 @@ foreach ($ThreadCountText in $Threads) {
     $ThreadCount = [int]$ThreadCountText
     Invoke-MeasureCase -Label "omp-$($ThreadCount)t" -Algorithm "o" -ThreadCount $ThreadCount
 }
+
+Invoke-MeasureCase -Label "cuda" -Algorithm "c" -ThreadCount 1 -DisplayThreads "gpu"
 
 Write-Host ""
 Write-Host "Resumo"
