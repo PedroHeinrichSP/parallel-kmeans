@@ -5,10 +5,9 @@
 #include "headers/k_means_clustering_utils.h"
 
 #include <stdlib.h>
-#include <time.h>
 
 int main(int argc, char* argv[]) {
-    srand((unsigned int)time(NULL));
+    srand(42);
 
     size_t size = 100000L;
     int k = 5;

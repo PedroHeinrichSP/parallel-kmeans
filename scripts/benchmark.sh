@@ -60,6 +60,8 @@ measure_case() {
         KMEANS_SKIP_EPS=1 \
         OMP_DYNAMIC=FALSE \
         OMP_PROC_BIND=TRUE \
+        OMP_PLACES=cores \
+        OMP_PROC_BIND=spread \
         OMP_WAIT_POLICY="$wait_policy" \
         OMP_NUM_THREADS="$threads" \
         /usr/bin/time -f "%e" -o "$time_file" \
@@ -69,6 +71,7 @@ measure_case() {
         elapsed="$(tr -d "[:space:]" < "$time_file")"
 
         printf "%s\t%s\t%s\t%s\n" "$label" "$display_threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
+        printf "%s\t%s\t%s\t%s\n" "$label" "$threads" "$run_index" "$elapsed" >>"$TMP_RESULTS"
         printf "  run %d/%d: %ss\n" "$run_index" "$RUNS" "$elapsed"
     done
 

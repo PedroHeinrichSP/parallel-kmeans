@@ -129,6 +129,7 @@ function Invoke-MeasureCase {
             $Results.Add([pscustomobject]@{
                 Label = $Label
                 Threads = $DisplayThreads
+                Threads = $ThreadCount
                 Run = $RunIndex
                 Elapsed = $Elapsed
             }) | Out-Null
