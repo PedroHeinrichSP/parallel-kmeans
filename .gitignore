@@ -72,3 +72,5 @@ Testing/
 *.eps
 *.png
 artifacts/executables/*
+
+!README.md
