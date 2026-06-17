@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -42,7 +43,11 @@ void runKMeans(size_t size, int k, kmeans_algorithm algorithm)
     cluster* clusters = algorithm(observations, size, k);
     if (clusters != NULL)
     {
-        printEPS(observations, size, clusters, k);
+        const char* skipEPS = getenv("KMEANS_SKIP_EPS");
+        if (skipEPS == NULL || strcmp(skipEPS, "1") != 0)
+        {
+            printEPS(observations, size, clusters, k);
+        }
     }
 
     free(observations);

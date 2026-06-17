@@ -72,3 +72,7 @@ Testing/
 *.eps
 *.png
 artifacts/executables/*
+
+# Local university VPN setup
+LOCAL_VPN_SETUP.md
+certificate/
