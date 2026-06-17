@@ -5,8 +5,9 @@ OBSERVATIONS="${1:-1000000}"
 CLUSTERS="${2:-5}"
 RUNS="${3:-3}"
 THREADS_CSV="${4:-1,2,4,8}"
+CPU_COUNT="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 
-EXECUTABLE="./artifacts/executables/kmeans_seq"
+EXECUTABLE="./artifacts/executables/kmeans"
 
 if ! command -v /usr/bin/time >/dev/null 2>&1; then
     echo "Erro: /usr/bin/time nao esta disponivel." >&2
@@ -42,7 +43,12 @@ measure_case() {
     local label="$1"
     local algorithm="$2"
     local threads="$3"
-    local run_index elapsed time_file
+    local run_index elapsed time_file wait_policy
+
+    wait_policy="ACTIVE"
+    if [ "$threads" -gt "$CPU_COUNT" ]; then
+        wait_policy="PASSIVE"
+    fi
 
     time_file="$(mktemp)"
 
@@ -50,6 +56,10 @@ measure_case() {
     echo "Executando $label"
 
     for run_index in $(seq 1 "$RUNS"); do
+        KMEANS_SKIP_EPS=1 \
+        OMP_DYNAMIC=FALSE \
+        OMP_PROC_BIND=TRUE \
+        OMP_WAIT_POLICY="$wait_policy" \
         OMP_NUM_THREADS="$threads" \
         /usr/bin/time -f "%e" -o "$time_file" \
         "$EXECUTABLE" "$OBSERVATIONS" "$CLUSTERS" "$algorithm" \

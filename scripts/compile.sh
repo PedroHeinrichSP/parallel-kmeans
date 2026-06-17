@@ -3,7 +3,9 @@ set -e
 
 mkdir -p artifacts/executables
 
-gcc code/runner.c \
+CFLAGS="${CFLAGS:--O3 -mtune=native -fno-math-errno}"
+
+gcc $CFLAGS code/runner.c \
     code/k_means_clustering_utils.c \
     code/k_means_clustering_sequencial.c \
     code/k_means_clustering_openmp.c \
@@ -11,5 +13,7 @@ gcc code/runner.c \
     code/k_means_clustering_cuda.c \
     -Icode/headers \
     -fopenmp \
-    -o artifacts/executables/kmeans_seq \
+    -o artifacts/executables/kmeans \
     -lm
+
+cp artifacts/executables/kmeans artifacts/executables/kmeans_seq

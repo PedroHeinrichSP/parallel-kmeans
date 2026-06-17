@@ -28,7 +28,7 @@ Execute:
 
 O executavel sera criado em:
 
-    artifacts/executables/kmeans_seq
+    artifacts/executables/kmeans
 
 Execucao
 --------

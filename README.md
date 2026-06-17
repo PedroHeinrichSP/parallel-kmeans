@@ -20,7 +20,7 @@ Use o script de compilação:
 O executável será criado em:
 
 ```txt
-artifacts/executables/kmeans_seq
+artifacts/executables/kmeans
 ```
 
 ## Execução

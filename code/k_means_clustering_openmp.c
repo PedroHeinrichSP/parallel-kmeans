@@ -33,6 +33,34 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define CACHE_LINE_BYTES 64
+
+static size_t paddedStride(size_t elements, size_t elementSize)
+{
+    size_t elementsPerLine = CACHE_LINE_BYTES / elementSize;
+
+    if (elementsPerLine == 0)
+    {
+        elementsPerLine = 1;
+    }
+
+    return ((elements + elementsPerLine - 1) / elementsPerLine) *
+           elementsPerLine;
+}
+
+static void *alignedCalloc(size_t count, size_t size)
+{
+    void *memory = NULL;
+
+    if (posix_memalign(&memory, CACHE_LINE_BYTES, count * size) != 0)
+    {
+        return NULL;
+    }
+
+    memset(memory, 0, count * size);
+    return memory;
+}
+
 static unsigned int mixIndexToGroupSeed(size_t index, int k)
 {
     uint64_t value = (uint64_t)index + 0x9E3779B97F4A7C15ULL;
@@ -43,18 +71,22 @@ static unsigned int mixIndexToGroupSeed(size_t index, int k)
     return (unsigned int)(value % (uint64_t)k);
 }
 
-int calculateNearstOpenMP(observation *o, cluster clusters[], int k)
+static inline int calculateNearestIndex(const observation *o,
+                                        const cluster clusters[], int k)
 {
     double minD = DBL_MAX;
     double dist = 0;
     int index = -1;
+    double ox = o->x;
+    double oy = o->y;
 
     /* Mantem a busca interna sequencial: a paralelizacao ocorre no laco externo
        que classifica varias observacoes ao mesmo tempo. */
     for (int i = 0; i < k; i++)
     {
-        dist = (clusters[i].x - o->x) * (clusters[i].x - o->x) +
-               (clusters[i].y - o->y) * (clusters[i].y - o->y);
+        double dx = clusters[i].x - ox;
+        double dy = clusters[i].y - oy;
+        dist = dx * dx + dy * dy;
         if (dist < minD)
         {
             minD = dist;
@@ -63,6 +95,11 @@ int calculateNearstOpenMP(observation *o, cluster clusters[], int k)
     }
 
     return index;
+}
+
+int calculateNearstOpenMP(observation *o, cluster clusters[], int k)
+{
+    return calculateNearestIndex(o, clusters, k);
 }
 
 void calculateCentroidOpenMP(observation observations[], size_t size, cluster *centroid)
@@ -107,6 +144,9 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
     }
     else if ((size_t)k < size)
     {
+        size_t clusterStride = paddedStride((size_t)k, sizeof(double));
+        size_t countStride = paddedStride((size_t)k, sizeof(size_t));
+        size_t changedStride = paddedStride(1, sizeof(size_t));
         int maxThreads = omp_get_max_threads();
         double *localX = NULL;
         double *localY = NULL;
@@ -123,10 +163,14 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
         }
         memset(clusters, 0, k * sizeof(cluster));
 
-        localX = (double *)calloc((size_t)maxThreads * k, sizeof(double));
-        localY = (double *)calloc((size_t)maxThreads * k, sizeof(double));
-        localCount = (size_t *)calloc((size_t)maxThreads * k, sizeof(size_t));
-        changedPerThread = (size_t *)calloc((size_t)maxThreads, sizeof(size_t));
+        localX = (double *)alignedCalloc((size_t)maxThreads * clusterStride,
+                                         sizeof(double));
+        localY = (double *)alignedCalloc((size_t)maxThreads * clusterStride,
+                                         sizeof(double));
+        localCount = (size_t *)alignedCalloc((size_t)maxThreads * countStride,
+                                             sizeof(size_t));
+        changedPerThread = (size_t *)alignedCalloc(
+            (size_t)maxThreads * changedStride, sizeof(size_t));
         if (localX == NULL || localY == NULL || localCount == NULL ||
             changedPerThread == NULL)
         {
@@ -149,9 +193,11 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
         #pragma omp parallel shared(changed, keepRunning, clusters, localX, localY, localCount, changedPerThread)
         {
             int tid = omp_get_thread_num();
-            double *threadX = localX + ((size_t)tid * k);
-            double *threadY = localY + ((size_t)tid * k);
-            size_t *threadCount = localCount + ((size_t)tid * k);
+            double *threadX = localX + ((size_t)tid * clusterStride);
+            double *threadY = localY + ((size_t)tid * clusterStride);
+            size_t *threadCount = localCount + ((size_t)tid * countStride);
+            size_t *threadChanged =
+                changedPerThread + ((size_t)tid * changedStride);
 
             while (keepRunning)
             {
@@ -163,15 +209,15 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                     clusters[i].count = 0;
                 }
 
-                #pragma omp for schedule(static)
+                /* Cada thread deve limpar todo seu proprio bloco local. Usar
+                   omp for aqui dividiria indices entre threads e deixaria lixo
+                   de iteracoes anteriores em parte dos acumuladores. */
                 for (int i = 0; i < k; i++)
                 {
                     threadX[i] = 0;
                     threadY[i] = 0;
                     threadCount[i] = 0;
                 }
-
-                changedPerThread[tid] = 0;
 
                 /* Cada thread acumula apenas em seu bloco local por cluster. */
                 #pragma omp for schedule(static)
@@ -194,10 +240,13 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
 
                     for (int owner = 0; owner < maxThreads; owner++)
                     {
-                        size_t index = (size_t)owner * k + i;
-                        sumX += localX[index];
-                        sumY += localY[index];
-                        count += localCount[index];
+                        size_t valueIndex =
+                            (size_t)owner * clusterStride + (size_t)i;
+                        size_t countIndex =
+                            (size_t)owner * countStride + (size_t)i;
+                        sumX += localX[valueIndex];
+                        sumY += localY[valueIndex];
+                        count += localCount[countIndex];
                     }
 
                     clusters[i].count = count;
@@ -209,24 +258,26 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                 }
 
                 /* Reclassificacao paralela; cada thread soma suas mudancas
-                   localmente para evitar atomics no caminho quente. */
+                   localmente para evitar escritas compartilhadas no laco quente. */
+                size_t changedLocal = 0;
                 #pragma omp for schedule(static)
                 for (size_t j = 0; j < size; j++)
                 {
-                    int nearest = calculateNearstOpenMP(observations + j, clusters, k);
+                    int nearest = calculateNearestIndex(observations + j, clusters, k);
                     if (nearest != observations[j].group)
                     {
-                        changedPerThread[tid]++;
+                        changedLocal++;
                         observations[j].group = nearest;
                     }
                 }
+                *threadChanged = changedLocal;
 
                 #pragma omp single
                 {
                     changed = 0;
                     for (int owner = 0; owner < maxThreads; owner++)
                     {
-                        changed += changedPerThread[owner];
+                        changed += changedPerThread[(size_t)owner * changedStride];
                     }
                     keepRunning = changed > minAcceptedError;
                 }
