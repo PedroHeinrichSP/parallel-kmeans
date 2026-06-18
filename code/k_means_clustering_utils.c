@@ -29,13 +29,19 @@ void generateObservations(observation observations[], size_t size)
     }
 }
 
-void runKMeans(size_t size, int k, kmeans_algorithm algorithm)
+int runKMeans(size_t size, int k, kmeans_algorithm algorithm)
 {
     observation* observations = malloc(sizeof(observation) * size);
     if (observations == NULL || algorithm == NULL)
     {
+        if (observations == NULL)
+        {
+            fprintf(stderr,
+                    "Falha ao alocar observacoes: %zu bytes para %zu pontos.\n",
+                    sizeof(observation) * size, size);
+        }
         free(observations);
-        return;
+        return 1;
     }
 
     generateObservations(observations, size);
@@ -49,9 +55,18 @@ void runKMeans(size_t size, int k, kmeans_algorithm algorithm)
             printEPS(observations, size, clusters, k);
         }
     }
+    else
+    {
+        fprintf(stderr,
+                "Falha ao executar K-Means para size=%zu k=%d.\n",
+                size, k);
+        free(observations);
+        return 1;
+    }
 
     free(observations);
     free(clusters);
+    return 0;
 }
 
 void printEPS(observation pts[], size_t len, cluster cent[], int k)

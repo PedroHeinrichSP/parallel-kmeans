@@ -46,7 +46,7 @@ void generateObservations(observation observations[], size_t size);
  * @param k  no of clusters to be made
  * @param algorithm  K-Means implementation to execute
  */
-void runKMeans(size_t size, int k, kmeans_algorithm algorithm);
+int runKMeans(size_t size, int k, kmeans_algorithm algorithm);
 
 /*!
  * A function to print observations and clusters

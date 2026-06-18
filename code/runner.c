@@ -37,6 +37,5 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    runKMeans(size, k, algorithm);
-    return 0;
+    return runKMeans(size, k, algorithm);
 }

@@ -20,6 +20,15 @@ Requisitos
 - bash
 - ImageMagick, apenas se desejar converter a saida EPS para PNG via script run.sh
 
+Windows:
+- PowerShell
+- gcc no PATH (por exemplo, via MinGW-w64/MSYS2)
+
+macOS:
+- bash
+- um compilador com OpenMP
+- opcionalmente Homebrew com `gcc`, ou `llvm` + `libomp`
+
 Compilacao
 ----------
 Execute:
@@ -29,6 +38,14 @@ Execute:
 O executavel sera criado em:
 
     artifacts/executables/kmeans
+
+Windows:
+
+    .\scripts\compile.ps1
+
+macOS:
+
+    ./scripts/compile_macos.sh
 
 Execucao
 --------
@@ -40,13 +57,21 @@ Algoritmos aceitos:
 
     s  versao sequencial
     o  versao OpenMP em CPU
-    g  placeholder OpenMP GPU
-    c  placeholder CUDA
+    g  versao OpenMP GPU
+    c  versao CUDA ou fallback placeholder sem nvcc
 
 Exemplos:
 
     ./scripts/run.sh 1000000 5 s
     OMP_NUM_THREADS=8 ./scripts/run.sh 1000000 5 o
+
+Windows:
+
+    .\scripts\run.ps1 1000000 5 s
+
+macOS:
+
+    ./scripts/run_macos.sh 1000000 5 s
 
 Para medir 1, 2, 4, 8, 16 e 32 threads:
 
@@ -72,3 +97,9 @@ Observacao sobre benchmarks
 Depois de medir no servidor de teste, preencha o bloco inicial de
 code/k_means_clustering_openmp.c com os tempos da versao sequencial e das
 execucoes OpenMP com 1, 2, 4, 8, 16 e 32 threads.
+
+Scripts de benchmark:
+
+    ./scripts/benchmark.sh
+    .\scripts\benchmark.ps1
+    ./scripts/benchmark_macos.sh

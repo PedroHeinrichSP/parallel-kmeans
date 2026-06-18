@@ -9,16 +9,95 @@
  *   pontos usam OpenMP target teams distribute parallel for.
  * - Clusters vazios mantem o centroide anterior, evitando divisao por zero e
  *   acompanhando a decisao da versao OpenMP CPU otimizada.
- * - Quando o compilador/runtime nao possui device de offload, OpenMP executa a
- *   regiao target no host, mantendo a implementacao funcional.
+ * - Por padrao, a execucao exige offload real para GPU. O fallback em CPU fica
+ *   disponivel apenas por configuracao explicita via ambiente.
  */
 
 #include "headers/k_means_clustering_openmp_gpu.h"
+#include "headers/k_means_clustering_openmp.h"
 
 #include <float.h>
 #include <omp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define KMEANS_OMP_GPU_DEFAULT_MAX_BYTES (1024ULL * 1024ULL * 1024ULL)
+
+static size_t getOpenMPGPUByteLimit(void)
+{
+    const char *limitEnv = getenv("KMEANS_OMP_GPU_MAX_BYTES");
+
+    if (limitEnv != NULL && limitEnv[0] != '\0')
+    {
+        char *end = NULL;
+        unsigned long long parsed = strtoull(limitEnv, &end, 10);
+
+        if (end != limitEnv && *end == '\0')
+        {
+            return (size_t)parsed;
+        }
+    }
+
+    return (size_t)KMEANS_OMP_GPU_DEFAULT_MAX_BYTES;
+}
+
+static int shouldAllowOpenMPGPUCPUFallback(void)
+{
+    const char *fallbackEnv = getenv("KMEANS_OMP_GPU_ALLOW_CPU_FALLBACK");
+
+    return fallbackEnv != NULL && strcmp(fallbackEnv, "1") == 0;
+}
+
+static void reportOpenMPGPUFailure(const char *reason)
+{
+    fprintf(stderr, "omp-gpu: %s.\n", reason);
+}
+
+static int openMPTargetIsOffloading(void)
+{
+    int runningOnHost = 1;
+
+    if (omp_get_num_devices() <= 0)
+    {
+        return 0;
+    }
+
+    #pragma omp target map(from : runningOnHost)
+    {
+        runningOnHost = omp_is_initial_device();
+    }
+
+    return runningOnHost == 0;
+}
+
+static int openMPGPUCanRun(size_t size, int k)
+{
+    size_t requiredBytes = 0;
+    size_t clusterCount = (size_t)((k > 0) ? k : 0);
+    size_t byteLimit = getOpenMPGPUByteLimit();
+
+    if (!openMPTargetIsOffloading())
+    {
+        reportOpenMPGPUFailure(
+            "runtime/compilacao sem offload real de OpenMP target");
+        return 0;
+    }
+
+    requiredBytes += size * sizeof(observation);
+    requiredBytes += clusterCount * sizeof(cluster);
+    requiredBytes += clusterCount * sizeof(double) * 2U;
+    requiredBytes += clusterCount * sizeof(size_t);
+
+    if (requiredBytes > byteLimit)
+    {
+        reportOpenMPGPUFailure(
+            "dataset grande demais para o limite configurado de memoria do offload");
+        return 0;
+    }
+
+    return 1;
+}
 
 #pragma omp declare target
 static inline int calculateNearestIndexGPU(const observation *o,
@@ -54,6 +133,23 @@ int calculateNearstOpenMP_GPU(observation *o, cluster clusters[], int k)
 void calculateCentroidOpenMP_GPU(observation observations[], size_t size,
                                  cluster *centroid)
 {
+    if (!openMPGPUCanRun(size, 1))
+    {
+        if (shouldAllowOpenMPGPUCPUFallback())
+        {
+            fprintf(stderr,
+                    "omp-gpu: fallback em CPU habilitado por KMEANS_OMP_GPU_ALLOW_CPU_FALLBACK=1.\n");
+            calculateCentroidOpenMP(observations, size, centroid);
+        }
+        else
+        {
+            centroid->x = 0;
+            centroid->y = 0;
+            centroid->count = 0;
+        }
+        return;
+    }
+
     double sumX = 0;
     double sumY = 0;
 
@@ -83,6 +179,17 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
 
     if (observations == NULL || size == 0 || k <= 0)
     {
+        return NULL;
+    }
+
+    if (!openMPGPUCanRun(size, k))
+    {
+        if (shouldAllowOpenMPGPUCPUFallback())
+        {
+            fprintf(stderr,
+                    "omp-gpu: fallback em CPU habilitado por KMEANS_OMP_GPU_ALLOW_CPU_FALLBACK=1.\n");
+            return kMeansOpenMP(observations, size, k);
+        }
         return NULL;
     }
 

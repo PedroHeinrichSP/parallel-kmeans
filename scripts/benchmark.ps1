@@ -46,42 +46,9 @@ if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Compilando o projeto..."
-
-$ArtifactsDir = Join-Path $PSScriptRoot "..\artifacts\executables"
-New-Item -ItemType Directory -Force -Path $ArtifactsDir | Out-Null
-
-$DefaultCFlags = @("-O3", "-mtune=native", "-fno-math-errno")
-$CFlags = if ($env:CFLAGS) {
-    $env:CFLAGS.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
-} else {
-    $DefaultCFlags
-}
-
-$CompileArgs = @(
-    $CFlags
-    "code/runner.c"
-    "code/k_means_clustering_utils.c"
-    "code/k_means_clustering_sequencial.c"
-    "code/k_means_clustering_openmp.c"
-    "code/k_means_clustering_openmp_gpu.c"
-    "code/k_means_clustering_cuda.c"
-    "-Icode/headers"
-    "-fopenmp"
-    "-o"
-    "artifacts/executables/kmeans.exe"
-    "-lm"
-)
-
-Push-Location (Join-Path $PSScriptRoot "..")
-try {
-    & gcc @CompileArgs *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "gcc terminou com codigo $LASTEXITCODE."
-    }
-
-    Copy-Item -Force "artifacts/executables/kmeans.exe" "artifacts/executables/kmeans_seq.exe"
-} finally {
-    Pop-Location
+& (Join-Path $PSScriptRoot "compile.ps1")
+if ($LASTEXITCODE -ne 0) {
+    throw "compile.ps1 terminou com codigo $LASTEXITCODE."
 }
 
 $Results = New-Object System.Collections.Generic.List[object]
@@ -129,7 +96,6 @@ function Invoke-MeasureCase {
             $Results.Add([pscustomobject]@{
                 Label = $Label
                 Threads = $DisplayThreads
-                Threads = $ThreadCount
                 Run = $RunIndex
                 Elapsed = $Elapsed
             }) | Out-Null
@@ -152,6 +118,7 @@ foreach ($ThreadCountText in $Threads) {
     Invoke-MeasureCase -Label "omp-$($ThreadCount)t" -Algorithm "o" -ThreadCount $ThreadCount
 }
 
+Invoke-MeasureCase -Label "omp-gpu" -Algorithm "g" -ThreadCount 1 -DisplayThreads "gpu"
 Invoke-MeasureCase -Label "cuda" -Algorithm "c" -ThreadCount 1 -DisplayThreads "gpu"
 
 Write-Host ""
