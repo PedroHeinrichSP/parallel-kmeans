@@ -103,3 +103,14 @@ Scripts de benchmark:
     ./scripts/benchmark.sh
     .\scripts\benchmark.ps1
     ./scripts/benchmark_macos.sh
+
+Resumo
+modo       threads  media(s)   min(s)     max(s)     speedup
+seq        1        14.690000  11.370000  16.140000  1.00x
+omp-1t     1        12.530000  11.470000  16.620000  1.17x
+omp-2t     2        11.376000  11.350000  11.430000  1.29x
+omp-4t     4        6.600000   6.340000   7.460000   2.23x
+omp-8t     8        6.428000   5.920000   7.250000   2.29x
+omp-16t    16       5.866000   5.830000   5.920000   2.50x
+omp-32t    32       6.208000   5.810000   7.400000   2.37x
+cuda       gpu      6.072000   5.970000   6.270000   2.42x
