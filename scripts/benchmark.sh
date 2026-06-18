@@ -4,7 +4,7 @@ set -euo pipefail
 OBSERVATIONS="${1:-1000000}"
 CLUSTERS="${2:-5}"
 RUNS="${3:-3}"
-THREADS_CSV="${4:-1,2,4,8}"
+THREADS_CSV="${4:-1,2,4,8,16,32}"
 CPU_COUNT="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 
 EXECUTABLE="./artifacts/executables/kmeans"
