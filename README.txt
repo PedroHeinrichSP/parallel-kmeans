@@ -94,9 +94,7 @@ de execucao.
 
 Observacao sobre benchmarks
 ---------------------------
-Depois de medir no servidor de teste, preencha o bloco inicial de
-code/k_means_clustering_openmp.c com os tempos da versao sequencial e das
-execucoes OpenMP com 1, 2, 4, 8, 16 e 32 threads.
+Os tempos abaixo foram obtidos com os scripts de benchmark do projeto.
 
 Scripts de benchmark:
 
