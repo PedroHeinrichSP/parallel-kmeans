@@ -2,15 +2,28 @@
  * @file k_means_clustering_openmp_gpu.c
  * @brief Versao em GPU do algoritmo K-Means usando OpenMP target offload.
  *
- * A implementacao segue a mesma semantica da versao OpenMP em CPU:
- * - A inicializacao dos grupos usa rand() no host para preservar a comparacao
- *   com a versao sequencial/OpenMP CPU.
- * - Os lacos pesados de soma dos centroides, normalizacao e reatribuicao dos
- *   pontos usam OpenMP target teams distribute parallel for.
- * - Clusters vazios mantem o centroide anterior, evitando divisao por zero e
- *   acompanhando a decisao da versao OpenMP CPU otimizada.
- * - Por padrao, a execucao exige offload real para GPU. O fallback em CPU fica
- *   disponivel apenas por configuracao explicita via ambiente.
+ * Comparacao com k_means_clustering_sequencial.c:
+ * - A semantica do K-Means continua a mesma: inicializacao, recomputacao dos
+ *   centroides e reclassificacao ate a convergencia.
+ * - A principal diferenca e que os lacos dominantes deixam a CPU e passam a
+ *   executar em um dispositivo OpenMP target, tipicamente a GPU.
+ *
+ * Mudancas principais e por que elas sao necessarias:
+ * - A inicializacao com rand() continua no host para manter reproducibilidade
+ *   com as versoes sequencial e OpenMP CPU.
+ * - Os lacos pesados foram convertidos para
+ *   target teams distribute parallel for, que e o mecanismo de offload do
+ *   OpenMP para explorar paralelismo massivo na GPU.
+ * - Como os dados agora atravessam a fronteira host/dispositivo, a implementacao
+ *   precisa mapear explicitamente observacoes, clusters e buffers auxiliares.
+ * - Antes de offload, o codigo verifica se existe GPU acessivel e se o dataset
+ *   cabe no limite configurado. Isso evita iniciar uma execucao que falharia
+ *   por indisponibilidade de dispositivo ou excesso de memoria.
+ * - A acumulacao por cluster na GPU usa atomics. Diferente da CPU, onde ha
+ *   buffers privados por thread, aqui essa escolha simplifica a consolidacao
+ *   das somas dentro do dispositivo.
+ * - Clusters vazios mantem o centroide anterior para evitar divisao por zero,
+ *   problema que a formula sequencial deixa implicito quando count > 0.
  */
 
 #include "headers/k_means_clustering_openmp_gpu.h"
@@ -63,6 +76,9 @@ static int openMPTargetIsOffloading(void)
         return 0;
     }
 
+    /* Esta pequena regiao target confirma se o runtime realmente saiu do host.
+       Sem essa verificacao, a "versao GPU" poderia executar silenciosamente na
+       CPU e invalidar a comparacao com a implementacao sequencial. */
     #pragma omp target map(from : runningOnHost)
     {
         runningOnHost = omp_is_initial_device();
@@ -77,6 +93,8 @@ static int openMPGPUCanRun(size_t size, int k)
     size_t clusterCount = (size_t)((k > 0) ? k : 0);
     size_t byteLimit = getOpenMPGPUByteLimit();
 
+    /* Diferente das versoes CPU, aqui precisamos validar o ambiente de
+       execucao antes de entrar no algoritmo. */
     if (!openMPTargetIsOffloading())
     {
         reportOpenMPGPUFailure(
@@ -84,6 +102,9 @@ static int openMPGPUCanRun(size_t size, int k)
         return 0;
     }
 
+    /* O sequencial trabalha diretamente na memoria principal. Com offload,
+       estimamos a memoria a ser mapeada para evitar exceder a capacidade
+       configurada do dispositivo. */
     requiredBytes += size * sizeof(observation);
     requiredBytes += clusterCount * sizeof(cluster);
     requiredBytes += clusterCount * sizeof(double) * 2U;
@@ -124,6 +145,9 @@ static inline int calculateNearestIndexGPU(const observation *o,
     return index;
 }
 #pragma omp end declare target
+/* Esta funcao precisa estar em declare target porque sera chamada de dentro de
+   regioes executadas no dispositivo. A versao sequencial/CPU nao precisa dessa
+   anotacao, pois todo o codigo roda no mesmo espaco de execucao. */
 
 int calculateNearstOpenMP_GPU(observation *o, cluster clusters[], int k)
 {
@@ -157,6 +181,9 @@ void calculateCentroidOpenMP_GPU(observation observations[], size_t size,
     centroid->y = 0;
     centroid->count = size;
 
+    /* A soma do centroide unico segue a mesma formula da versao sequencial,
+       mas o laco e enviado para a GPU e a reduction combina os resultados
+       parciais produzidos pelas equipes/threads do dispositivo. */
     #pragma omp target teams distribute parallel for reduction(+ : sumX, sumY) \
         map(tofrom : observations[0:size]) map(to : size)
     for (size_t i = 0; i < size; i++)
@@ -237,19 +264,24 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
             clusters[i].count = 0;
         }
 
-        /* Mantem a inicializacao por rand() no host para reproducibilidade com
-           as outras versoes chamadas pelo runner apos srand(42). */
+        /* A inicializacao segue no host para manter a mesma base de comparacao
+           das versoes sequencial e OpenMP CPU. */
         for (size_t j = 0; j < size; j++)
         {
             observations[j].group = rand() % k;
         }
 
+        /* O bloco target data mantem os vetores residentes no dispositivo
+           entre iteracoes. Sem isso, cada laco faria novas transferencias de
+           dados entre host e GPU, reduzindo bastante o ganho do offload. */
         #pragma omp target data map(tofrom : observations[0:size]) \
             map(tofrom : clusters[0:k]) map(alloc : sumX[0:k], sumY[0:k], counts[0:k]) \
             map(to : size, k)
         {
             while (keepRunning)
             {
+                /* Equivale ao reset dos acumuladores na versao sequencial,
+                   mas agora acontece diretamente na memoria do dispositivo. */
                 #pragma omp target teams distribute parallel for
                 for (int i = 0; i < k; i++)
                 {
@@ -258,6 +290,9 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
                     counts[i] = 0;
                 }
 
+                /* Este e o STEP 2 do sequencial adaptado para GPU. Como muitas
+                   threads podem atualizar o mesmo cluster, usamos atomics para
+                   proteger sumX/sumY/counts. */
                 #pragma omp target teams distribute parallel for
                 for (size_t j = 0; j < size; j++)
                 {
@@ -273,6 +308,7 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
                     counts[group]++;
                 }
 
+                /* Depois das somas, a normalizacao recompõe os centroides. */
                 #pragma omp target teams distribute parallel for
                 for (int i = 0; i < k; i++)
                 {
@@ -283,9 +319,14 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
                         clusters[i].x = sumX[i] / count;
                         clusters[i].y = sumY[i] / count;
                     }
+                    /* Se um cluster ficar vazio, preservamos o centroide
+                       anterior em vez de dividir por zero. */
                 }
 
                 changed = 0;
+                /* Equivale ao STEP 3/4 do sequencial: cada ponto procura o
+                   centroide mais proximo. A reduction agrega quantos pontos
+                   trocaram de grupo nesta iteracao. */
                 #pragma omp target teams distribute parallel for \
                     reduction(+ : changed)
                 for (size_t j = 0; j < size; j++)
@@ -316,6 +357,8 @@ cluster *kMeansOpenMP_GPU(observation observations[], size_t size, int k)
         }
         memset(clusters, 0, sizeof(cluster) * (size_t)k);
 
+        /* Caso trivial: cada observacao ocupa um cluster proprio. Assim como
+           na versao CPU, cada iteracao escreve em um indice independente. */
         #pragma omp target teams distribute parallel for \
             map(tofrom : observations[0:size], clusters[0:k]) map(to : size)
         for (size_t j = 0; j < size; j++)

@@ -62,5 +62,3 @@ else
         -o artifacts/executables/kmeans \
         -lm
 fi
-
-cp artifacts/executables/kmeans artifacts/executables/kmeans_seq

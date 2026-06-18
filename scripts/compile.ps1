@@ -44,7 +44,6 @@ try {
         throw "gcc terminou com codigo $LASTEXITCODE."
     }
 
-    Copy-Item -Force "artifacts/executables/kmeans.exe" "artifacts/executables/kmeans_seq.exe"
 } finally {
     Pop-Location
 }

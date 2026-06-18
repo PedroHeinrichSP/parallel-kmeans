@@ -2,19 +2,29 @@
  * @file k_means_clustering_openmp.c
  * @brief Versao paralela em CPU do algoritmo K-Means usando OpenMP.
  *
- * Mudancas realizadas para a paralelizacao:
- * - A atribuicao inicial dos grupos replica a versao sequencial com rand(),
- *   mantendo o mesmo ponto de partida para uma comparacao justa de tempo.
- * - O loop principal do K-Means roda dentro de uma regiao paralela persistente,
- *   reduzindo o overhead de abrir multiplas regioes a cada iteracao.
- * - O calculo dos centroides usa acumuladores privados por thread e merge
- *   paralelo por cluster, mantendo o laco quente livre de atomics.
- * - A reatribuicao das observacoes acumula mudancas por thread,
- *   evitando reducoes caras no laco quente.
- * - O calculo do centroide unico (k <= 1) tambem usa reduction para somar x/y.
- * - A implementacao nao assume valores fixos para quantidade de pontos ou
- *   clusters; apenas espera que a seed global de rand() seja configurada
- *   como 42 pelo runner para reproducibilidade.
+ * Comparacao com k_means_clustering_sequencial.c:
+ * - A logica do algoritmo e a mesma: inicializa grupos, recalcula centroides
+ *   e reclassifica os pontos ate estabilizar.
+ * - A diferenca e que os lacos que percorrem todas as observacoes deixam de ser
+ *   executados por um unico fluxo e passam a ser divididos entre varias
+ *   threads.
+ *
+ * Mudancas principais e por que elas sao necessarias:
+ * - A inicializacao com rand() foi mantida no host para preservar a mesma
+ *   sensibilidade do algoritmo ao estado inicial e permitir comparacao justa
+ *   com a versao sequencial.
+ * - O loop principal foi envolvido por uma regiao paralela persistente para
+ *   evitar o custo de criar/destruir threads a cada iteracao do K-Means.
+ * - As somas de centroides nao podem mais escrever diretamente em
+ *   clusters[group], como na versao sequencial, porque varias threads podem
+ *   atingir o mesmo grupo ao mesmo tempo. Por isso usamos acumuladores
+ *   privados por thread e um merge posterior.
+ * - Os acumuladores privados foram alinhados e preenchidos com padding para
+ *   reduzir falso compartilhamento entre threads.
+ * - O numero de mudancas de grupo tambem passa a ser computado localmente por
+ *   thread e consolidado depois, evitando contencao em um contador global.
+ * - O caso especial k <= 1 usa reduction, que preserva a mesma formula da
+ *   versao sequencial sem serializar a soma de todos os pontos.
  */
 
 #include "headers/k_means_clustering_openmp.h"
@@ -26,8 +36,9 @@
 
 #define CACHE_LINE_BYTES 64
 
-/* Retorna um stride arredondado para linha de cache. Isso separa os
-   acumuladores de threads diferentes e reduz falso compartilhamento. */
+/* A versao sequencial nao precisa disso porque so existe um escritor.
+   Em paralelo, arredondar o stride para a linha de cache ajuda a evitar
+   falso compartilhamento entre acumuladores de threads diferentes. */
 static size_t paddedStride(size_t elements, size_t elementSize)
 {
     size_t elementsPerLine = CACHE_LINE_BYTES / elementSize;
@@ -41,8 +52,9 @@ static size_t paddedStride(size_t elements, size_t elementSize)
            elementsPerLine;
 }
 
-/* Aloca memoria alinhada a linha de cache e inicializada com zero para os
-   buffers thread-local usados no laco principal. */
+/* A versao sequencial usa apenas o vetor final de clusters. Aqui surgem
+   buffers thread-local para transformar atualizacoes concorrentes em
+   acumulacoes privadas seguidas de merge. */
 static void *alignedCalloc(size_t count, size_t size)
 {
     void *memory = NULL;
@@ -56,9 +68,9 @@ static void *alignedCalloc(size_t count, size_t size)
     return memory;
 }
 
-/* Calcula o centroide mais proximo de uma observacao. O laco permanece
-   generico em relacao a k; o paralelismo acontece no laco externo que chama
-   esta funcao para muitas observacoes. */
+/* A regra de distancia e igual a da versao sequencial; o ganho vem do fato de
+   que varias observacoes chamam esta rotina ao mesmo tempo em threads
+   diferentes. */
 static inline int calculateNearestIndex(const observation *restrict o,
                                         const cluster *restrict clusters, int k)
 {
@@ -97,8 +109,8 @@ void calculateCentroidOpenMP(observation observations[], size_t size, cluster *c
     centroid->y = 0;
     centroid->count = size;
 
-    /* Paralelizacao: cada thread soma uma faixa do vetor e a clausula reduction
-       combina os valores parciais em sumX/sumY sem condicao de corrida. */
+    /* Na versao sequencial um unico laco acumula x/y. Em OpenMP, a reduction
+       cria somas privadas por thread e combina tudo no fim sem corrida. */
     #pragma omp parallel for reduction(+ : sumX, sumY) schedule(static)
     for (size_t i = 0; i < size; i++)
     {
@@ -174,13 +186,16 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
             return NULL;
         }
 
-        /* Mantem a mesma inicializacao da versao sequencial para que o
-           benchmark compare o mesmo numero de iteracoes do K-Means. */
+        /* Mantemos a mesma inicializacao da versao sequencial porque o numero
+           de iteracoes depende do chute inicial dos grupos. */
         for (size_t j = 0; j < size; j++)
         {
             observations[j].group = rand() % k;
         }
 
+        /* A regiao paralela persistente e uma diferenca importante em relacao
+           ao sequencial: ela amortiza o overhead de gerenciar threads ao longo
+           de todas as iteracoes do algoritmo. */
         #pragma omp parallel shared(changed, keepRunning, clusters, localX, localY, localCount, changedPerThread, usedThreads)
         {
             int tid = omp_get_thread_num();
@@ -196,9 +211,9 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
             }
             while (keepRunning)
             {
-                /* Cada thread deve limpar todo seu proprio bloco local. Usar
-                   omp for aqui dividiria indices entre threads e deixaria lixo
-                   de iteracoes anteriores em parte dos acumuladores. */
+                /* Na versao sequencial bastaria zerar clusters[i]. Aqui cada
+                   thread precisa limpar o proprio buffer local inteiro; usar
+                   omp for nesse passo deixaria partes antigas sem limpeza. */
                 for (int i = 0; i < k; i++)
                 {
                     threadX[i] = 0;
@@ -206,7 +221,9 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                     threadCount[i] = 0;
                 }
 
-                /* Cada thread acumula apenas em seu bloco local por cluster. */
+                /* Este trecho corresponde ao STEP 2 da versao sequencial.
+                   A diferenca e que o acumulador agora e privado por thread,
+                   evitando corrida quando muitos pontos caem no mesmo grupo. */
                 #pragma omp for schedule(static)
                 for (size_t j = 0; j < size; j++)
                 {
@@ -216,8 +233,9 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                     threadCount[group]++;
                 }
 
-                /* Merge paralelo por cluster: cada centroide agrega todas as
-                   contribuicoes thread-local antes da normalizacao. */
+                /* O merge recompõe o mesmo resultado numerico esperado da
+                   versao sequencial, mas separa a fase de escrita concorrente
+                   da fase de consolidacao. */
                 #pragma omp for schedule(static)
                 for (int i = 0; i < k; i++)
                 {
@@ -242,12 +260,14 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                         clusters[i].x = sumX / count;
                         clusters[i].y = sumY / count;
                     }
-                    /* Cluster vazio: mantem o centroide anterior em vez de
-                       empurrar artificialmente o cluster para a origem. */
+                    /* Se count == 0, nao podemos dividir. Manter o centroide
+                       anterior evita instabilidade numerica e clusters falsos
+                       na origem. */
                 }
 
-                /* Reclassificacao paralela: cada thread conta suas mudancas
-                   localmente e publica um unico contador ao final do bloco. */
+                /* Este trecho corresponde ao STEP 3/4 da versao sequencial.
+                   O contador de mudancas vira local por thread para eliminar
+                   sincronizacao a cada ponto reclassificado. */
                 size_t changedLocal = 0;
                 #pragma omp for schedule(static)
                 for (size_t j = 0; j < size; j++)
@@ -261,6 +281,9 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
                 }
                 *threadChanged = changedLocal;
 
+                /* A barreira garante que todas as threads terminaram de
+                   publicar seus contadores locais antes da decisao de
+                   convergencia. */
                 #pragma omp barrier
                 #pragma omp single
                 {
@@ -288,8 +311,8 @@ cluster *kMeansOpenMP(observation observations[], size_t size, int k)
         }
         memset(clusters, 0, k * sizeof(cluster));
 
-        /* Caso trivial: cada observacao vira seu proprio cluster. Tambem pode
-           ser paralelizado porque cada indice e escrito independentemente. */
+        /* No caso trivial, cada iteracao escreve em uma posicao independente.
+           Por isso a paralelizacao e direta, sem buffers auxiliares. */
         #pragma omp parallel for schedule(static)
         for (int j = 0; j < (int)size; j++)
         {

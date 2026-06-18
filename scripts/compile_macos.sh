@@ -55,5 +55,3 @@ CC_BIN="$(pick_macos_compiler)" || {
     -o artifacts/executables/kmeans \
     -lm \
     $OPENMP_LDFLAGS
-
-cp artifacts/executables/kmeans artifacts/executables/kmeans_seq
